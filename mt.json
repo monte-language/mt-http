@@ -1,0 +1,6 @@
+{
+    "name": "HTTP",
+    "paths": ["."],
+    "entrypoint": "http/resource",
+    "dependencies": { }
+}
