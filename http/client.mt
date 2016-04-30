@@ -1,3 +1,12 @@
+import "lib/codec/utf8" =~  [=> UTF8 :DeepFrozen]
+import "lib/gai" =~ [=> makeGAI :DeepFrozen]
+import "lib/enum" =~ [=> makeEnum :DeepFrozen]
+import "lib/tubes" =~ [
+    => makeMapPump :DeepFrozen,
+    => makePumpTube :DeepFrozen,
+]
+exports (main)
+
 # Copyright (C) 2014 Google Inc. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not
@@ -11,16 +20,6 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-
-import "lib/codec/utf8" =~  [=> UTF8 :DeepFrozen]
-import "lib/gai" =~ [=> makeGAI :DeepFrozen]
-import "lib/enum" =~ [=> makeEnum :DeepFrozen]
-import "lib/tubes" =~ [
-    => makeMapPump :DeepFrozen,
-    => makePumpTube :DeepFrozen,
-]
-
-exports (main)
 
 
 def lowercase(specimen, ej) as DeepFrozen:

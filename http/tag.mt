@@ -24,12 +24,8 @@ def escapeEntities(specimen, ej) :Str as DeepFrozen:
         escaped replace= (needle, entity)
     return escaped
 
-def escapeFragment(fragment) as DeepFrozen:
-    switch (fragment):
-        match via (escapeEntities) s :Str:
-            return s
-        match someTag:
-            return someTag
+def escapeFragment(fragment) :DeepFrozen as DeepFrozen:
+    return if (fragment =~ via (escapeEntities) s :Str) { s } else { fragment }
 
 object tag as DeepFrozen:
     match [tagType :Str, pieces, namedArgs]:

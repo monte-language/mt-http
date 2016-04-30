@@ -1,3 +1,4 @@
+import "unittest" =~ [=> unittest]
 import "lib/tubes" =~ [=> makeMapPump :DeepFrozen,
      => makePumpTube :DeepFrozen,
      => chain :DeepFrozen,
@@ -6,7 +7,6 @@ import "lib/enum" =~ [=> makeEnum :DeepFrozen]
 import "lib/codec/percent" =~ [=> PercentEncoding :DeepFrozen]
 import "lib/codec" =~ [=> composeCodec :DeepFrozen]
 import "lib/record" =~ [=> makeRecord :DeepFrozen]
-import "unittest" =~ [=> unittest]
 import "lib/codec/utf8" =~  [=> UTF8 :DeepFrozen]
 exports (makeHTTPEndpoint)
 
