@@ -5,6 +5,7 @@ import "lib/tubes" =~ [
     => makeMapPump :DeepFrozen,
     => makePumpTube :DeepFrozen,
 ]
+import "http/headers" =~ [=> Headers :DeepFrozen, => emptyHeaders :DeepFrozen]
 exports (main)
 
 # Copyright (C) 2014 Google Inc. All rights reserved.
@@ -26,25 +27,18 @@ def lowercase(specimen, ej) as DeepFrozen:
     def s :Str exit ej := specimen
     return s.toLowerCase()
 
+def finiteBody(headers :Headers) :Bool as DeepFrozen:
+    return headers.getContentLength() != null
 
-def makeCommonHeaders(contentLength :NullOk[Int]) as DeepFrozen:
-    return object commonHeaders:
-        to _printOn(out):
-            out.print("<common HTTP headers: ")
-            out.print(`Content length: $contentLength`)
-            out.print(">")
-
-        to finiteBody() :Bool:
-            return contentLength != null
-
-        to smallBody() :Bool:
-            return contentLength != null && contentLength < 1024 * 1024
+def smallBody(headers :Headers) :Bool as DeepFrozen:
+    def contentLength := headers.getContentLength()
+    return contentLength != null && contentLength < 1024 * 1024
 
 
-def makeResponse(status :Int, commonHeaders, extraHeaders, body) as DeepFrozen:
+def makeResponse(status :Int, headers :Headers, body) as DeepFrozen:
     return object response:
         to _printOn(out):
-            out.print(`<response $status: $commonHeaders ($extraHeaders)>`)
+            out.print(`<response $status: $headers>`)
 
         to getBody():
             return body
@@ -57,12 +51,10 @@ def [HTTPState, REQUEST, HEADER, BODY, BUFFERBODY, FOUNTBODY] := makeEnum(
 def makeResponseDrain(resolver) as DeepFrozen:
     var state :HTTPState := REQUEST
     var buf :Bytes := b``
-    var headers := null
+    var headers :Headers := emptyHeaders()
     var status :NullOk[Int] := null
     var label := null
 
-    var contentLength :NullOk[Int] := null
-    var commonHeaders := null
     def bytesToInt(s, e):
         try:
             return _makeInt.fromBytes(s)
@@ -89,7 +81,7 @@ def makeResponseDrain(resolver) as DeepFrozen:
             traceln(`Status: $status ($label)`)
             buf := tail
             state := HEADER
-            headers := [].asMap().diverge()
+            headers := emptyHeaders()
 
         to parseHeader(ej):
             escape final:
@@ -97,9 +89,11 @@ def makeResponseDrain(resolver) as DeepFrozen:
                 buf := tail
                 switch (key):
                     match via (lowercase) =="content-length":
-                        contentLength := bytesToInt(value, ej)
+                        headers withContentLength= (bytesToInt(value, null))
                     match header:
-                        headers[header] := UTF8.decode(value, null)
+                        def spareHeaders := headers.getSpareHeaders()
+                        headers withSpareHeaders= (spareHeaders.with(header,
+                            UTF8.decode(value.trim(), null)))
             catch _:
                 def b`$\r$\n@tail` exit ej := buf
                 buf := tail
@@ -113,16 +107,16 @@ def makeResponseDrain(resolver) as DeepFrozen:
                     match ==HEADER:
                         responseDrain.parseHeader(__break)
                     match ==BODY:
-                        commonHeaders := makeCommonHeaders(contentLength)
-                        if (commonHeaders.finiteBody()):
+                        if (finiteBody(headers)):
                             traceln("Currently expecting finite body")
-                            if (commonHeaders.smallBody()):
+                            if (smallBody(headers)):
                                 traceln("Body is small; will buffer in memory")
                                 state := BUFFERBODY
                             else:
                                 traceln("Body isn't small")
                                 state := FOUNTBODY
                     match ==BUFFERBODY:
+                        def contentLength := headers.getContentLength()
                         if (buf.size() >= contentLength):
                             def body := buf.slice(0, contentLength)
                             buf := buf.slice(contentLength, buf.size())
@@ -134,8 +128,7 @@ def makeResponseDrain(resolver) as DeepFrozen:
                         throw("Couldn't do fount body!")
 
         to finalize(body):
-            def response := makeResponse(status, commonHeaders,
-                                         headers.snapshot(), body)
+            def response := makeResponse(status, headers, body)
             resolver.resolve(response)
 
 

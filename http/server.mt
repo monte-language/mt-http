@@ -8,6 +8,7 @@ import "lib/codec/percent" =~ [=> PercentEncoding :DeepFrozen]
 import "lib/codec" =~ [=> composeCodec :DeepFrozen]
 import "lib/record" =~ [=> makeRecord :DeepFrozen]
 import "lib/codec/utf8" =~  [=> UTF8 :DeepFrozen]
+import "http/headers" =~ [=> Headers :DeepFrozen, => emptyHeaders :DeepFrozen]
 exports (makeHTTPEndpoint)
 
 # Copyright (C) 2014 Google Inc. All rights reserved.
@@ -28,12 +29,6 @@ exports (makeHTTPEndpoint)
 # Strange as it sounds, the percent encoding is actually *outside* the UTF-8
 # encoding!
 def UTF8Percent :DeepFrozen := composeCodec(PercentEncoding, UTF8)
-
-def [Headers :DeepFrozen,
-     makeHeaders :DeepFrozen] := makeRecord("Headers",
-     ["contentLength" => NullOk[Int],
-      "contentType" => NullOk[Pair[Str, Str]],
-      "spareHeaders" => Map[Str, Str]])
 
 def [Request :DeepFrozen,
      makeRequest :DeepFrozen] := makeRecord("Request",
@@ -62,7 +57,7 @@ def makeRequestPump() as DeepFrozen:
     var buf :Bytes := b``
     var pendingRequest := null
     var pendingRequestLine := null
-    var headers :Headers := makeHeaders(null, null, [].asMap())
+    var headers :Headers := emptyHeaders()
 
     return object requestPump:
         to started():
@@ -105,7 +100,7 @@ def makeRequestPump() as DeepFrozen:
                     # XXX it'd be swell if these were subpatterns
                     def b`@{via (UTF8.decode) verb} @{via (UTF8Percent.decode) uri} HTTP/1.1$\r$\n@t` exit ej := buf
                     pendingRequestLine := [verb, uri]
-                    headers := makeHeaders(null, null, [].asMap())
+                    headers := emptyHeaders()
                     requestState := HEADER
                     buf := t
                     return true
@@ -123,7 +118,7 @@ def makeRequestPump() as DeepFrozen:
                     switch (header.toLowerCase()):
                         match `content-length`:
                             try:
-                                def len  := _makeInt(value.trim())
+                                def len := _makeInt(value.trim())
                                 headers withContentLength= (len)
                                 bodyState := [FIXED, len]
                             catch p:
