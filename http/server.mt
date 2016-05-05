@@ -127,6 +127,8 @@ def makeRequestPump() as DeepFrozen:
                             # XXX should support options, right?
                             def `@type/@subtype` exit ej := value.trim()
                             headers withContentType= ([type, subtype])
+                        match `user-agent`:
+                            headers withUserAgent= (value.trim())
                         match _:
                             def spareHeaders := headers.getSpareHeaders()
                             headers withSpareHeaders= (spareHeaders.with(header, value.trim()))
