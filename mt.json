@@ -1,6 +1,6 @@
 {
     "name": "HTTP",
     "paths": ["."],
-    "entrypoint": "http/resource",
+    "entrypoint": "http/client",
     "dependencies": { }
 }

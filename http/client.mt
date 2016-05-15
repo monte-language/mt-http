@@ -6,7 +6,7 @@ import "lib/tubes" =~ [
     => makePumpTube :DeepFrozen,
 ]
 import "http/headers" =~ [=> Headers :DeepFrozen, => emptyHeaders :DeepFrozen]
-exports (main)
+exports (main, makeRequest)
 
 # Copyright (C) 2014 Google Inc. All rights reserved.
 #
@@ -40,12 +40,24 @@ def makeResponse(status :Int, headers :Headers, body) as DeepFrozen:
         to _printOn(out):
             out.print(`<response $status: $headers>`)
 
-        to getBody():
+        to status() :Int:
+            return status
+
+        to headers() :Headers:
+            return headers
+
+        to body():
             return body
 
 
-def [HTTPState, REQUEST, HEADER, BODY, BUFFERBODY, FOUNTBODY] := makeEnum(
-    ["request", "header", "body", "body (buffered)", "body (streaming)"])
+def [HTTPState :DeepFrozen,
+     REQUEST :DeepFrozen,
+     HEADER :DeepFrozen,
+     BODY :DeepFrozen,
+     BUFFERBODY :DeepFrozen,
+     FOUNTBODY :DeepFrozen,
+] := makeEnum(["request", "header", "body", "body (buffered)",
+    "body (streaming)"])
 
 
 def makeResponseDrain(resolver) as DeepFrozen:
@@ -174,5 +186,5 @@ def main(argv, => getAddrInfo, => makeTCP4ClientEndpoint) as DeepFrozen:
         def response := makeRequest(makeTCP4ClientEndpoint, addr.getAddress(), "/").get()
         when (response) ->
             traceln("Finished request with response", response)
-            traceln(UTF8.decode(response.getBody(), null))
+            traceln(UTF8.decode(response.body(), null))
             0
