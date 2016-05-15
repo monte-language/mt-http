@@ -1,5 +1,5 @@
 {
-    "name": "HTTP",
+    "name": "http",
     "paths": ["."],
     "entrypoint": "http/client",
     "dependencies": { }
