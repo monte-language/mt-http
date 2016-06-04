@@ -33,7 +33,7 @@ object tag as DeepFrozen:
         def fragments :List[DeepFrozen] := [for piece in (allPieces)
                                             escapeFragment(piece)]
         def attributes :Map[Str, Str] := [for k => v in (namedArgs)
-                                          if (k =~ sk :Str && v =~ sv :Str)
+                                          ? (k =~ sk :Str && v =~ sv :Str)
                                           sk => sv]
         object HTMLTag as DeepFrozen:
             to _printOn(out):
