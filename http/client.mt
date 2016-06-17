@@ -144,8 +144,8 @@ def makeResponseDrain(resolver) as DeepFrozen:
             resolver.resolve(response)
 
 
-def makeRequest(makeTCP4ClientEndpoint, host :Bytes, resource :Str) as DeepFrozen:
-    var port :Int := 80
+def makeRequest(makeTCP4ClientEndpoint, host :Bytes, resource :Str,
+                => port :Int := 80) as DeepFrozen:
     def headers := [
         "Host" => host,
         "Connection" => b`close`,
