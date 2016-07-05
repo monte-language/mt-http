@@ -71,11 +71,10 @@ def makeResponseDrain(resolver) as DeepFrozen:
     var status :NullOk[Int] := null
     var label := null
 
-    def bytesToInt(s, e):
-        try:
-            return _makeInt.fromBytes(s)
-        catch p:
-            e(p)
+    def nextLine(ej) :Bytes:
+        def b`@line$\r$\n@tail` exit ej := buf
+        buf := tail
+        return line
 
     return object responseDrain:
         to receive(bytes):
@@ -92,27 +91,20 @@ def makeResponseDrain(resolver) as DeepFrozen:
             traceln(`End of response: $reason`)
 
         to parseStatus(ej):
-            def b`HTTP/1.1 @{via (bytesToInt) statusCode} @{via (UTF8.decode) label}$\r$\n@tail` exit ej := buf
-            status := statusCode
-            traceln(`Status: $status ($label)`)
-            buf := tail
-            state := HEADER
-            headers := emptyHeaders()
+            def line := nextLine(ej)
+            if (line =~ b`HTTP/1.1 @{via (_makeInt.fromBytes) s} @label`):
+                status := s
+                traceln(`Status: $status ($label)`)
+                state := HEADER
+                headers := emptyHeaders()
 
         to parseHeader(ej):
-            def index := buf.indexOf(b`$\r$\n`)
-
-            if (index == -1):
-                throw.eject(ej, "No newline")
-
-            if (index == 0):
-                # Single newline; end of headers.
-                buf := buf.slice(2)
+            def line := nextLine(ej)
+            if (line.size() == 0):
+                # Double newline; end of headers.
                 state := BODY
-
-            def slice := buf.slice(0, index)
-            headers := parseHeader(headers, slice)
-            buf := buf.slice(index + 2)
+            else:
+                headers := parseHeader(headers, line)
 
         to parse():
             while (true):
