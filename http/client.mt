@@ -5,7 +5,11 @@ import "lib/tubes" =~ [
     => makeMapPump :DeepFrozen,
     => makePumpTube :DeepFrozen,
 ]
-import "http/headers" =~ [=> Headers :DeepFrozen, => emptyHeaders :DeepFrozen]
+import "http/headers" =~ [
+    => Headers :DeepFrozen,
+    => emptyHeaders :DeepFrozen,
+    => parseHeader :DeepFrozen,
+]
 exports (main, makeRequest)
 
 # Copyright (C) 2014 Google Inc. All rights reserved.
@@ -96,20 +100,19 @@ def makeResponseDrain(resolver) as DeepFrozen:
             headers := emptyHeaders()
 
         to parseHeader(ej):
-            escape final:
-                def b`@{via (UTF8.decode) key}: @value$\r$\n@tail` exit final := buf
-                buf := tail
-                switch (key):
-                    match via (lowercase) =="content-length":
-                        headers withContentLength= (bytesToInt(value, null))
-                    match header:
-                        def spareHeaders := headers.getSpareHeaders()
-                        headers withSpareHeaders= (spareHeaders.with(header,
-                            UTF8.decode(value.trim(), null)))
-            catch _:
-                def b`$\r$\n@tail` exit ej := buf
-                buf := tail
+            def index := buf.indexOf(b`$\r$\n`)
+
+            if (index == -1):
+                throw.eject(ej, "No newline")
+
+            if (index == 0):
+                # Single newline; end of headers.
+                buf := buf.slice(2)
                 state := BODY
+
+            def slice := buf.slice(0, index)
+            headers := parseHeader(headers, slice)
+            buf := buf.slice(index + 2)
 
         to parse():
             while (true):

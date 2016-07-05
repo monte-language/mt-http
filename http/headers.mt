@@ -1,7 +1,8 @@
+import "lib/codec/utf8" =~ [=> UTF8 :DeepFrozen]
 import "lib/enum" =~ [=> makeEnum :DeepFrozen]
 import "lib/record" =~ [=> makeRecord :DeepFrozen]
 import "unittest" =~ [=> unittest]
-exports (Headers, makeHeaders, emptyHeaders)
+exports (Headers, makeHeaders, emptyHeaders, parseHeader)
 
 # Common HTTP header structure.
 
@@ -41,7 +42,7 @@ def [Headers :DeepFrozen,
     "contentType" => NullOk[Pair[Str, Str]],
     "userAgent" => NullOk[Str],
     "transferCoding" => List[TransferCoding],
-    "spareHeaders" => Map[Str, Str],
+    "spareHeaders" => Map[Bytes, Bytes],
 ])
 
 def emptyHeaders() :Headers as DeepFrozen:
@@ -51,3 +52,24 @@ def emptyHeaders() :Headers as DeepFrozen:
         null, # userAgent
         [], # transferCoding
         [].asMap())
+
+def parseHeader(headers :Headers, bs :Bytes) :Headers as DeepFrozen:
+    "Parse a bytestring header and add it to a header record."
+
+    def b`@header:@{var value}` := bs
+    value trim= ()
+    return switch (header.trim().toLowerCase()):
+        match b`content-length`:
+            def len := _makeInt.fromBytes(value)
+            headers.withContentLength(len)
+        match b`content-type`:
+            # XXX should support options, right?
+            def via (UTF8.decode) `@type/@subtype` := value
+            headers.withContentType([type, subtype])
+        match b`transfer-coding`:
+            headers.withTransferCoding(parseTransferCoding(value))
+        match b`user-agent`:
+            headers.withUserAgent(value)
+        match h:
+            def spareHeaders := headers.getSpareHeaders()
+            headers.withSpareHeaders(spareHeaders.with(h, value))

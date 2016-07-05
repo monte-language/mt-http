@@ -8,7 +8,11 @@ import "lib/codec/percent" =~ [=> PercentEncoding :DeepFrozen]
 import "lib/codec" =~ [=> composeCodec :DeepFrozen]
 import "lib/record" =~ [=> makeRecord :DeepFrozen]
 import "lib/codec/utf8" =~  [=> UTF8 :DeepFrozen]
-import "http/headers" =~ [=> Headers :DeepFrozen, => emptyHeaders :DeepFrozen]
+import "http/headers" =~ [
+    => Headers :DeepFrozen,
+    => emptyHeaders :DeepFrozen,
+    => parseHeader :DeepFrozen,
+]
 exports (makeHTTPEndpoint)
 
 # Copyright (C) 2014 Google Inc. All rights reserved.
@@ -106,33 +110,24 @@ def makeRequestPump() as DeepFrozen:
                     return true
 
                 match ==HEADER:
-                    if (buf.indexOf(b`$\r$\n`) == -1):
+                    def index := buf.indexOf(b`$\r$\n`)
+
+                    if (index == -1):
                         return false
 
-                    if (buf =~ b`$\r$\n@t`):
+                    if (index == 0):
+                        # Single newline; end of headers.
                         requestState := BODY
-                        buf := t
+                        buf := buf.slice(2)
+                        # Copy the content length to become the body length.
+                        def contentLength := headers.getContentLength()
+                        if (contentLength != null):
+                            bodyState := [FIXED, contentLength]
                         return true
 
-                    def b`@{via (UTF8.decode) header}:@{via (UTF8.decode) value}$\r$\n@t` exit ej := buf
-                    switch (header.toLowerCase()):
-                        match `content-length`:
-                            try:
-                                def len := _makeInt(value.trim())
-                                headers withContentLength= (len)
-                                bodyState := [FIXED, len]
-                            catch p:
-                                throw.eject(ej, p)
-                        match `content-type`:
-                            # XXX should support options, right?
-                            def `@type/@subtype` exit ej := value.trim()
-                            headers withContentType= ([type, subtype])
-                        match `user-agent`:
-                            headers withUserAgent= (value.trim())
-                        match _:
-                            def spareHeaders := headers.getSpareHeaders()
-                            headers withSpareHeaders= (spareHeaders.with(header, value.trim()))
-                    buf := t
+                    def slice := buf.slice(0, index)
+                    headers := parseHeader(headers, slice)
+                    buf := buf.slice(index + 2)
                     return true
 
                 match ==BODY:
