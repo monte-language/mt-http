@@ -8,8 +8,8 @@ exports (Headers, makeHeaders, emptyHeaders, parseHeader)
 
 # RFC 7230.
 
-# 4. Transfer Codings
-def [TransferCoding :DeepFrozen,
+# 4. Transfer Encodings
+def [TransferEncoding :DeepFrozen,
      IDENTITY :DeepFrozen,
      CHUNKED :DeepFrozen,
      COMPRESS :DeepFrozen,
@@ -17,7 +17,7 @@ def [TransferCoding :DeepFrozen,
      GZIP :DeepFrozen,
 ] := makeEnum(["identity", "chunked", "compress", "deflate", "gzip"])
 
-def parseTransferCoding(bs :Bytes) :List[TransferCoding] as DeepFrozen:
+def parseTransferEncoding(bs :Bytes) :List[TransferEncoding] as DeepFrozen:
     return [for coding in (bs.toLowerCase().split(b`,`))
         switch (coding.trim()) {
             match b`identity` { IDENTITY }
@@ -27,13 +27,13 @@ def parseTransferCoding(bs :Bytes) :List[TransferCoding] as DeepFrozen:
             match b`gzip` { GZIP }
         }]
 
-def testTransferCoding(assert):
-    assert.equal(parseTransferCoding(b`identity`), [IDENTITY])
-    assert.equal(parseTransferCoding(b`Chunked`), [CHUNKED])
-    assert.equal(parseTransferCoding(b`gzip, chunked`), [GZIP, CHUNKED])
+def testTransferEncoding(assert):
+    assert.equal(parseTransferEncoding(b`identity`), [IDENTITY])
+    assert.equal(parseTransferEncoding(b`Chunked`), [CHUNKED])
+    assert.equal(parseTransferEncoding(b`gzip, chunked`), [GZIP, CHUNKED])
 
 unittest([
-    testTransferCoding,
+    testTransferEncoding,
 ])
 
 def [Headers :DeepFrozen,
@@ -41,7 +41,7 @@ def [Headers :DeepFrozen,
     "contentLength" => NullOk[Int],
     "contentType" => NullOk[Pair[Str, Str]],
     "userAgent" => NullOk[Str],
-    "transferCoding" => List[TransferCoding],
+    "transferEncoding" => List[TransferEncoding],
     "spareHeaders" => Map[Bytes, Bytes],
 ])
 
@@ -50,7 +50,7 @@ def emptyHeaders() :Headers as DeepFrozen:
         null, # contentLength
         null, # contentType
         null, # userAgent
-        [], # transferCoding
+        [], # transferEncoding
         [].asMap())
 
 def parseHeader(headers :Headers, bs :Bytes) :Headers as DeepFrozen:
@@ -66,10 +66,18 @@ def parseHeader(headers :Headers, bs :Bytes) :Headers as DeepFrozen:
             # XXX should support options, right?
             def via (UTF8.decode) `@type/@subtype` := value
             headers.withContentType([type, subtype])
-        match b`transfer-coding`:
-            headers.withTransferCoding(parseTransferCoding(value))
+        match b`transfer-encoding`:
+            headers.withTransferEncoding(parseTransferEncoding(value))
         match b`user-agent`:
             headers.withUserAgent(value)
         match h:
             def spareHeaders := headers.getSpareHeaders()
             headers.withSpareHeaders(spareHeaders.with(h, value))
+
+def testParseHeaderTransferEncoding(assert):
+    def headers := parseHeader(emptyHeaders(), b`Transfer-Encoding: chunked`)
+    assert.equal(headers.getTransferEncoding(), [CHUNKED])
+
+unittest([
+    testParseHeaderTransferEncoding,
+])
