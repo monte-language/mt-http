@@ -2,8 +2,8 @@ import "lib/codec/utf8" =~  [=> UTF8 :DeepFrozen]
 import "lib/gai" =~ [=> makeGAI :DeepFrozen]
 import "lib/enum" =~ [=> makeEnum :DeepFrozen]
 import "lib/tubes" =~ [
-    => makeMapPump :DeepFrozen,
-    => makePumpTube :DeepFrozen,
+    => makePureDrain :DeepFrozen,
+    => makeFount :DeepFrozen,
 ]
 import "http/headers" =~ [
     => Headers :DeepFrozen,
@@ -39,8 +39,8 @@ def smallBody(headers :Headers) :Bool as DeepFrozen:
     return contentLength != null && contentLength < 1024 * 1024
 
 
-def makeResponse(status :Int, headers :Headers, body) as DeepFrozen:
-    return object response:
+def makeResponse(status :Int, headers :Headers, bodyFount) as DeepFrozen:
+    return object response extends bodyFount:
         to _printOn(out):
             out.print(`<response $status: $headers>`)
 
@@ -50,18 +50,69 @@ def makeResponse(status :Int, headers :Headers, body) as DeepFrozen:
         to headers() :Headers:
             return headers
 
-        to body():
-            return body
-
 
 def [HTTPState :DeepFrozen,
      REQUEST :DeepFrozen,
      HEADER :DeepFrozen,
      BODY :DeepFrozen,
-     BUFFERBODY :DeepFrozen,
-     FOUNTBODY :DeepFrozen,
-] := makeEnum(["request", "header", "body", "body (buffered)",
-    "body (streaming)"])
+] := makeEnum(["request", "header", "body"])
+
+
+def makeBodyController(headers :Headers) as DeepFrozen:
+    def contentLength :NullOk[Int] := headers.getContentLength()
+    var resolver := null
+    var buf :Bytes := b``
+    var done :Bool := false
+
+    def run() :Vow:
+        traceln(`run() $done ${buf.size()} $resolver`)
+        if (done):
+            return if (buf.size() == 0):
+                makeFount.sentinel()
+            else:
+                # Final chunk.
+                def rv := buf
+                buf := b``
+                return rv
+        else:
+            def [p, r] := Ref.promise()
+            resolver := r
+            return p
+
+    def feed(bs :Bytes) :Bool:
+        traceln(`feed($bs)`)
+        buf += bs
+        if (resolver != null):
+            resolver.resolve(buf)
+            buf := b``
+        return true
+
+    return if (contentLength == null):
+        object streamingBodyController:
+            "A controller for a streaming body."
+
+            to run() :Vow:
+                return run()
+
+            to feed(bs :Bytes) :Bool:
+                return feed(bs)
+    else:
+        var remaining :Int := contentLength
+
+        object finiteBodyController:
+            "A controller for a finite body."
+
+            to run() :Vow:
+                return run()
+
+            to feed(bs :Bytes) :Bool:
+                remaining -= bs.size()
+                if (remaining <= 0):
+                    feed(bs)
+                    done := true
+                    return false
+                else:
+                    return feed(bs)
 
 
 def makeResponseDrain(resolver) as DeepFrozen:
@@ -69,7 +120,9 @@ def makeResponseDrain(resolver) as DeepFrozen:
     var buf :Bytes := b``
     var headers :Headers := emptyHeaders()
     var status :NullOk[Int] := null
-    var label := null
+
+    var bodyController := null
+    var bodyMachine := null
 
     def nextLine(ej) :Bytes:
         def b`@line$\r$\n@tail` exit ej := buf
@@ -103,6 +156,10 @@ def makeResponseDrain(resolver) as DeepFrozen:
             if (line.size() == 0):
                 # Double newline; end of headers.
                 state := BODY
+                bodyController := makeBodyController(headers)
+                def fount := makeFount.fromController(bodyController)
+                def response := makeResponse(status, headers, fount)
+                resolver.resolve(response)
             else:
                 headers := parseHeader(headers, line)
 
@@ -114,29 +171,12 @@ def makeResponseDrain(resolver) as DeepFrozen:
                     match ==HEADER:
                         responseDrain.parseHeader(__break)
                     match ==BODY:
-                        if (finiteBody(headers)):
-                            traceln("Currently expecting finite body")
-                            if (smallBody(headers)):
-                                traceln("Body is small; will buffer in memory")
-                                state := BUFFERBODY
-                            else:
-                                traceln("Body isn't small")
-                                state := FOUNTBODY
-                    match ==BUFFERBODY:
-                        def contentLength := headers.getContentLength()
-                        if (buf.size() >= contentLength):
-                            def body := buf.slice(0, contentLength)
-                            buf := buf.slice(contentLength, buf.size())
-                            responseDrain.finalize(body)
-                        else:
-                            break
-                    match ==FOUNTBODY:
-                        traceln("I'm not prepared to do this yet!")
-                        throw("Couldn't do fount body!")
-
-        to finalize(body):
-            def response := makeResponse(status, headers, body)
-            resolver.resolve(response)
+                        def more := bodyController.feed(buf)
+                        buf := b``
+                        if (!more):
+                            bodyController := null
+                            state := REQUEST
+                        break
 
 
 def makeRequest(makeTCP4ClientEndpoint, host :Bytes, resource :Str,
@@ -181,5 +221,13 @@ def main(argv, => getAddrInfo, => makeTCP4ClientEndpoint) as DeepFrozen:
         def response := makeRequest(makeTCP4ClientEndpoint, addr.getAddress(), "/").get()
         when (response) ->
             traceln("Finished request with response", response)
-            traceln(UTF8.decode(response.body(), null))
-            0
+            def drain := makePureDrain()
+            response<-flowTo(drain)
+            traceln("Getting body...")
+            when (def pieces := drain<-promisedItems()) ->
+                traceln(`Pieces: $pieces`)
+                0
+    catch problem:
+        traceln(`Problem: $problem`)
+        traceln.exception(problem)
+        1
