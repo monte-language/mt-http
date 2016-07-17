@@ -2,7 +2,8 @@ import "lib/codec/utf8" =~ [=> UTF8 :DeepFrozen]
 import "lib/enum" =~ [=> makeEnum :DeepFrozen]
 import "lib/record" =~ [=> makeRecord :DeepFrozen]
 import "unittest" =~ [=> unittest]
-exports (Headers, makeHeaders, emptyHeaders, parseHeader)
+exports (Headers, makeHeaders, emptyHeaders, parseHeader,
+         IDENTITY, CHUNKED)
 
 # Common HTTP header structure.
 

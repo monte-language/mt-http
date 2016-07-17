@@ -2,13 +2,17 @@ import "lib/codec/utf8" =~  [=> UTF8 :DeepFrozen]
 import "lib/gai" =~ [=> makeGAI :DeepFrozen]
 import "lib/enum" =~ [=> makeEnum :DeepFrozen]
 import "lib/tubes" =~ [
+    => nullPump :DeepFrozen,
     => makePureDrain :DeepFrozen,
     => makeFount :DeepFrozen,
+    => makePumpTube :DeepFrozen,
 ]
 import "http/headers" =~ [
     => Headers :DeepFrozen,
     => emptyHeaders :DeepFrozen,
     => parseHeader :DeepFrozen,
+    => IDENTITY :DeepFrozen,
+    => CHUNKED :DeepFrozen,
 ]
 exports (main, makeRequest)
 
@@ -30,13 +34,6 @@ exports (main, makeRequest)
 def lowercase(specimen, ej) as DeepFrozen:
     def s :Str exit ej := specimen
     return s.toLowerCase()
-
-def finiteBody(headers :Headers) :Bool as DeepFrozen:
-    return headers.getContentLength() != null
-
-def smallBody(headers :Headers) :Bool as DeepFrozen:
-    def contentLength := headers.getContentLength()
-    return contentLength != null && contentLength < 1024 * 1024
 
 
 def makeResponse(status :Int, headers :Headers, bodyFount) as DeepFrozen:
@@ -115,6 +112,47 @@ def makeBodyController(headers :Headers) as DeepFrozen:
                     return feed(bs)
 
 
+def makeChunkTube() as DeepFrozen:
+    "Make a tube which decodes chunked transfer coding."
+
+    def tube
+
+    var chunkSize :NullOk[Int] := null
+    var buf :Bytes := b``
+
+    object chunkPump extends nullPump:
+        to received(bs :Bytes) :List[Bytes]:
+            var rv := []
+            buf += bs
+            while (buf.size() != 0):
+                traceln(`chunkSize=$chunkSize buf=$buf rv=$rv`)
+                if (chunkSize == null):
+                    # Need to read a new size.
+                    if (buf =~ b`@size$\r$\n@rest`):
+                        chunkSize := _makeInt.withRadix(16).fromBytes(size)
+                        buf := rest
+                    else:
+                        break
+                else if (chunkSize == 0):
+                    # Need to read a newline.
+                    buf slice= (2, buf.size())
+                    chunkSize := null
+                else:
+                    # Need to read a chunk.
+                    def chunk := buf.slice(0, chunkSize)
+                    if (chunk.size() == 0):
+                        # Zero-sized chunk means end of stream.
+                        tube<-stopFlow()
+                        buf slice= (2, buf.size())
+                    rv with= (chunk)
+                    buf slice= (chunkSize, buf.size())
+                    chunkSize -= chunk.size()
+            return rv
+
+    bind tube := makePumpTube(chunkPump)
+    return tube
+
+
 def makeResponseDrain(resolver) as DeepFrozen:
     var state :HTTPState := REQUEST
     var buf :Bytes := b``
@@ -158,7 +196,15 @@ def makeResponseDrain(resolver) as DeepFrozen:
                 state := BODY
                 bodyController := makeBodyController(headers)
                 def fount := makeFount.fromController(bodyController)
-                def response := makeResponse(status, headers, fount)
+                var response := makeResponse(status, headers, fount)
+                # Rig up body decoder.
+                for encoding in (headers.getTransferEncoding()):
+                    switch (encoding):
+                        match ==IDENTITY:
+                            # No-op.
+                            null
+                        match ==CHUNKED:
+                            response flowTo= (makeChunkTube())
                 resolver.resolve(response)
             else:
                 headers := parseHeader(headers, line)
@@ -214,11 +260,13 @@ def makeRequest(makeTCP4ClientEndpoint, host :Bytes, resource :Str,
 
 
 def main(argv, => getAddrInfo, => makeTCP4ClientEndpoint) as DeepFrozen:
-    def addrs := getAddrInfo(b`example.com`, b``)
+    def addrs := getAddrInfo(b`localhost`, b``)
     return when (addrs) ->
         def gai := makeGAI(addrs)
         def [addr] + _ := gai.TCP4()
-        def response := makeRequest(makeTCP4ClientEndpoint, addr.getAddress(), "/").get()
+        def port :Int := 3456
+        def response := makeRequest(makeTCP4ClientEndpoint, addr.getAddress(),
+                                    "/statistics?t=json", => port).get()
         when (response) ->
             traceln("Finished request with response", response)
             def drain := makePureDrain()
