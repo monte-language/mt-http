@@ -1,11 +1,12 @@
 import "lib/codec/utf8" =~  [=> UTF8 :DeepFrozen]
 import "lib/gai" =~ [=> makeGAI :DeepFrozen]
 import "lib/enum" =~ [=> makeEnum :DeepFrozen]
-import "lib/tubes" =~ [
-    => nullPump :DeepFrozen,
-    => makePureDrain :DeepFrozen,
-    => makeFount :DeepFrozen,
-    => makePumpTube :DeepFrozen,
+import "lib/streams" =~ [
+    => Pump :DeepFrozen,
+    => Source :DeepFrozen,
+    => alterSource :DeepFrozen,
+    => flow :DeepFrozen,
+    => makeSink :DeepFrozen,
 ]
 import "http/headers" =~ [
     => Headers :DeepFrozen,
@@ -36,8 +37,8 @@ def lowercase(specimen, ej) as DeepFrozen:
     return s.toLowerCase()
 
 
-def makeResponse(status :Int, headers :Headers, bodyFount) as DeepFrozen:
-    return object response extends bodyFount:
+def makeResponse(status :Int, headers :Headers, bodySource) as DeepFrozen:
+    return object response:
         to _printOn(out):
             out.print(`<response $status: $headers>`)
 
@@ -47,6 +48,9 @@ def makeResponse(status :Int, headers :Headers, bodyFount) as DeepFrozen:
         to headers() :Headers:
             return headers
 
+        to source():
+            return bodySource
+
 
 def [HTTPState :DeepFrozen,
      REQUEST :DeepFrozen,
@@ -55,77 +59,72 @@ def [HTTPState :DeepFrozen,
 ] := makeEnum(["request", "header", "body"])
 
 
-def makeBodyController(headers :Headers) as DeepFrozen:
+def makeBodyMachine(headers :Headers) as DeepFrozen:
     def contentLength :NullOk[Int] := headers.getContentLength()
     var resolver := null
     var buf :Bytes := b``
     var done :Bool := false
 
-    def run() :Vow:
-        traceln(`run() $done ${buf.size()} $resolver`)
-        if (done):
-            return if (buf.size() == 0):
-                makeFount.sentinel()
+    def source(sink) :Vow[Void]:
+        traceln(`source($sink) done=$done buf.size()=${buf.size()} resolver=$resolver`)
+        return if (done):
+            if (buf.size() == 0):
+                sink<-complete()
             else:
                 # Final chunk.
-                def rv := buf
+                sink<-(buf)
                 buf := b``
-                return rv
+                sink<-complete()
         else:
-            def [p, r] := Ref.promise()
-            resolver := r
-            return p
+            sink<-(buf)
+            buf := b``
 
     def feed(bs :Bytes) :Bool:
         traceln(`feed($bs)`)
         buf += bs
-        if (resolver != null):
-            resolver.resolve(buf)
-            buf := b``
         return true
 
-    return if (contentLength == null):
-        object streamingBodyController:
-            "A controller for a streaming body."
-
-            to run() :Vow:
-                return run()
-
-            to feed(bs :Bytes) :Bool:
-                return feed(bs)
-    else:
+    def machine := if (contentLength == null) {
+        feed
+    } else {
         var remaining :Int := contentLength
 
-        object finiteBodyController:
+        def finiteBodyMachine(bs :Bytes) :Bool {
             "A controller for a finite body."
 
-            to run() :Vow:
-                return run()
+            remaining -= bs.size()
+            return if (remaining <= 0) {
+                feed(bs)
+                done := true
+                false
+            } else {
+                feed(bs)
+            }
+        }
+    }
 
-            to feed(bs :Bytes) :Bool:
-                remaining -= bs.size()
-                if (remaining <= 0):
-                    feed(bs)
-                    done := true
-                    return false
-                else:
-                    return feed(bs)
+    return [machine, source]
 
 
-def makeChunkTube() as DeepFrozen:
-    "Make a tube which decodes chunked transfer coding."
-
-    def tube
+def addChunked(source) :Source as DeepFrozen:
+    "Make a source which decodes chunked transfer coding."
 
     var chunkSize :NullOk[Int] := null
     var buf :Bytes := b``
+    var pieces :List := []
+    var done :Bool := false
 
-    object chunkPump extends nullPump:
-        to received(bs :Bytes) :List[Bytes]:
-            var rv := []
+    object chunkSink:
+        to complete():
+            done := true
+
+        to abort(reason):
+            done := true
+
+        to run(bs :Bytes):
             buf += bs
             while (buf.size() != 0):
-                traceln(`chunkSize=$chunkSize buf=$buf rv=$rv`)
+                traceln(`chunkSize=$chunkSize buf=$buf pieces=$pieces`)
                 if (chunkSize == null):
                     # Need to read a new size.
                     if (buf =~ b`@size$\r$\n@rest`):
@@ -142,24 +141,29 @@ def makeChunkTube() as DeepFrozen:
                     def chunk := buf.slice(0, chunkSize)
                     if (chunk.size() == 0):
                         # Zero-sized chunk means end of stream.
-                        tube<-stopFlow()
                         buf slice= (2, buf.size())
-                    rv with= (chunk)
+                    pieces with= (chunk)
                     buf slice= (chunkSize, buf.size())
                     chunkSize -= chunk.size()
-            return rv
+            if (!done):
+                source<-(chunkSink)
 
-    bind tube := makePumpTube(chunkPump)
-    return tube
+    source<-(chunkSink)
+
+    return def chunkSource(sink) as Source:
+        return if (done):
+            sink<-complete()
+        else:
+            sink<-(b``.join(pieces))
+            pieces := []
 
 
-def makeResponseDrain(resolver) as DeepFrozen:
+def makeResponseSink(resolver) as DeepFrozen:
     var state :HTTPState := REQUEST
     var buf :Bytes := b``
     var headers :Headers := emptyHeaders()
     var status :NullOk[Int] := null
 
-    var bodyController := null
     var bodyMachine := null
 
     def nextLine(ej) :Bytes:
@@ -167,62 +171,60 @@ def makeResponseDrain(resolver) as DeepFrozen:
         buf := tail
         return line
 
-    return object responseDrain:
-        to receive(bytes):
+    def parseStatus(ej):
+        def line := nextLine(ej)
+        if (line =~ b`HTTP/1.1 @{via (_makeInt.fromBytes) s} @label`):
+            status := s
+            traceln(`Status: $status ($label)`)
+            state := HEADER
+            headers := emptyHeaders()
+
+    def parseHeaderLine(ej):
+        def line := nextLine(ej)
+        if (line.size() == 0):
+            # Double newline; end of headers.
+            state := BODY
+            def [machine, var source] := makeBodyMachine(headers)
+            bodyMachine := machine
+            # Rig up body decoder.
+            for encoding in (headers.getTransferEncoding()):
+                switch (encoding):
+                    match ==IDENTITY:
+                        # No-op.
+                        null
+                    match ==CHUNKED:
+                        traceln(`Fusing chunked pump`)
+                        source := addChunked(source)
+            def response := makeResponse(status, headers, source)
+            resolver.resolve(response)
+        else:
+            headers := parseHeader(headers, line)
+
+    def parse():
+        while (true):
+            switch (state):
+                match ==REQUEST:
+                    parseStatus(__break)
+                match ==HEADER:
+                    parseHeaderLine(__break)
+                match ==BODY:
+                    def more :Bool := bodyMachine(buf)
+                    buf := b``
+                    if (!more):
+                        bodyMachine := null
+                        state := REQUEST
+                    break
+
+    return object responseSink:
+        to complete():
+            traceln(`Response complete`)
+
+        to abort(reason):
+            traceln(`Response aborted: $reason`)
+
+        to run(bytes):
             buf += bytes
-            responseDrain.parse()
-
-        to flowingFrom(fount):
-            return responseDrain
-
-        to flowAborted(reason):
-            traceln(`Flow aborted: $reason`)
-
-        to flowStopped(reason):
-            traceln(`End of response: $reason`)
-
-        to parseStatus(ej):
-            def line := nextLine(ej)
-            if (line =~ b`HTTP/1.1 @{via (_makeInt.fromBytes) s} @label`):
-                status := s
-                traceln(`Status: $status ($label)`)
-                state := HEADER
-                headers := emptyHeaders()
-
-        to parseHeader(ej):
-            def line := nextLine(ej)
-            if (line.size() == 0):
-                # Double newline; end of headers.
-                state := BODY
-                bodyController := makeBodyController(headers)
-                def fount := makeFount.fromController(bodyController)
-                var response := makeResponse(status, headers, fount)
-                # Rig up body decoder.
-                for encoding in (headers.getTransferEncoding()):
-                    switch (encoding):
-                        match ==IDENTITY:
-                            # No-op.
-                            null
-                        match ==CHUNKED:
-                            response flowTo= (makeChunkTube())
-                resolver.resolve(response)
-            else:
-                headers := parseHeader(headers, line)
-
-        to parse():
-            while (true):
-                switch (state):
-                    match ==REQUEST:
-                        responseDrain.parseStatus(__break)
-                    match ==HEADER:
-                        responseDrain.parseHeader(__break)
-                    match ==BODY:
-                        def more := bodyController.feed(buf)
-                        buf := b``
-                        if (!more):
-                            bodyController := null
-                            state := REQUEST
-                        break
+            parse()
 
 
 def makeRequest(makeTCP4ClientEndpoint, host :Bytes, resource :Str,
@@ -236,22 +238,23 @@ def makeRequest(makeTCP4ClientEndpoint, host :Bytes, resource :Str,
         to put(key, value :Bytes):
             headers[key] := value
 
-        to write(verb, drain):
-            drain.receive(UTF8.encode(`$verb $resource HTTP/1.1$\r$\n`, null))
+        to write(verb, sink):
+            sink(UTF8.encode(`$verb $resource HTTP/1.1$\r$\n`, null))
             for via (UTF8.encode) k => v in (headers):
-                drain.receive(b`$k: $v$\r$\n`)
-            drain.receive(b`$\r$\n`)
+                sink(b`$k: $v$\r$\n`)
+            sink(b`$\r$\n`)
 
         to send(verb :Str):
             def endpoint := makeTCP4ClientEndpoint(host, port)
-            def [fount, drain] := endpoint.connect()
+            def [source, sink] := endpoint.connectStream()
             def [p, r] := Ref.promise()
 
             # Write request.
-            when (drain) ->
-                request.write(verb, drain)
+            when (sink) ->
+                request.write(verb, sink)
+                sink.complete()
             # Read response.
-            fount<-flowTo(makeResponseDrain(r))
+            source<-(makeResponseSink(r))
 
             return p
 
@@ -269,10 +272,10 @@ def main(argv, => getAddrInfo, => makeTCP4ClientEndpoint) as DeepFrozen:
                                     "/statistics?t=json", => port).get()
         when (response) ->
             traceln("Finished request with response", response)
-            def drain := makePureDrain()
-            response<-flowTo(drain)
+            def [pieces, sink] := makeSink.asList()
             traceln("Getting body...")
-            when (def pieces := drain<-promisedItems()) ->
+            flow(response.source(), sink)
+            when (pieces) ->
                 traceln(`Pieces: $pieces`)
                 0
     catch problem:
