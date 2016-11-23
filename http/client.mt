@@ -6,6 +6,7 @@ import "lib/streams" =~ [
     => Source :DeepFrozen,
     => alterSource :DeepFrozen,
     => flow :DeepFrozen,
+    => makePump :DeepFrozen,
     => makeSink :DeepFrozen,
 ]
 import "http/headers" =~ [
@@ -37,7 +38,7 @@ def lowercase(specimen, ej) as DeepFrozen:
     return s.toLowerCase()
 
 
-def makeResponse(status :Int, headers :Headers, bodySource) as DeepFrozen:
+def makeResponse(status :Int, headers :Headers, bodySource :Source) as DeepFrozen:
     return object response:
         to _printOn(out):
             out.print(`<response $status: $headers>`)
@@ -65,7 +66,7 @@ def makeBodyMachine(headers :Headers) as DeepFrozen:
     var buf :Bytes := b``
     var done :Bool := false
 
-    def source(sink) :Vow[Void]:
+    def source(sink) :Vow[Void] as Source:
         traceln(`source($sink) done=$done buf.size()=${buf.size()} resolver=$resolver`)
         return if (done):
             if (buf.size() == 0):
@@ -106,56 +107,39 @@ def makeBodyMachine(headers :Headers) as DeepFrozen:
     return [machine, source]
 
 
-def addChunked(source) :Source as DeepFrozen:
-    "Make a source which decodes chunked transfer coding."
+def makeChunkedPump() :Pump as DeepFrozen:
+    "Make a pump which decodes chunked transfer coding."
 
     var chunkSize :NullOk[Int] := null
     var buf :Bytes := b``
-    var pieces :List := []
-    var done :Bool := false
 
-    object chunkSink:
-        to complete():
-            done := true
-
-        to abort(reason):
-            done := true
-
-        to run(bs :Bytes):
-            buf += bs
-            while (buf.size() != 0):
-                traceln(`chunkSize=$chunkSize buf=$buf pieces=$pieces`)
-                if (chunkSize == null):
-                    # Need to read a new size.
-                    if (buf =~ b`@size$\r$\n@rest`):
-                        chunkSize := _makeInt.withRadix(16).fromBytes(size)
-                        buf := rest
-                    else:
-                        break
-                else if (chunkSize == 0):
-                    # Need to read a newline.
-                    buf slice= (2, buf.size())
-                    chunkSize := null
+    return def chunkedPump(bs :Bytes) :NullOk[List[Bytes]] as Pump:
+        var rv :List := []
+        buf += bs
+        while (buf.size() != 0):
+            traceln(`chunkSize=$chunkSize buf=$buf rv=$rv`)
+            if (chunkSize == null):
+                # Need to read a new size.
+                if (buf =~ b`@size$\r$\n@rest`):
+                    chunkSize := _makeInt.withRadix(16).fromBytes(size)
+                    buf := rest
                 else:
-                    # Need to read a chunk.
-                    def chunk := buf.slice(0, chunkSize)
-                    if (chunk.size() == 0):
-                        # Zero-sized chunk means end of stream.
-                        buf slice= (2, buf.size())
-                    pieces with= (chunk)
-                    buf slice= (chunkSize, buf.size())
-                    chunkSize -= chunk.size()
-            if (!done):
-                source<-(chunkSink)
-
-    source<-(chunkSink)
-
-    return def chunkSource(sink) as Source:
-        return if (done):
-            sink<-complete()
-        else:
-            sink<-(b``.join(pieces))
-            pieces := []
+                    break
+            else if (chunkSize == 0):
+                # Need to read a newline.
+                buf slice= (2, buf.size())
+                chunkSize := null
+            else:
+                # Need to read a chunk.
+                def chunk := buf.slice(0, chunkSize)
+                if (chunk.size() == 0):
+                    # Zero-sized chunk means end of stream.
+                    buf slice= (2, buf.size())
+                    return null
+                rv with= (chunk)
+                buf slice= (chunkSize, buf.size())
+                chunkSize -= chunk.size()
+        return rv
 
 
 def makeResponseSink(resolver) as DeepFrozen:
@@ -184,7 +168,7 @@ def makeResponseSink(resolver) as DeepFrozen:
         if (line.size() == 0):
             # Double newline; end of headers.
             state := BODY
-            def [machine, var source] := makeBodyMachine(headers)
+            def [machine, var source :Source] := makeBodyMachine(headers)
             bodyMachine := machine
             # Rig up body decoder.
             for encoding in (headers.getTransferEncoding()):
@@ -193,8 +177,8 @@ def makeResponseSink(resolver) as DeepFrozen:
                         # No-op.
                         null
                     match ==CHUNKED:
-                        traceln(`Fusing chunked pump`)
-                        source := addChunked(source)
+                        source := alterSource.fusePump(makeChunkedPump(),
+                                                       source)
             def response := makeResponse(status, headers, source)
             resolver.resolve(response)
         else:
