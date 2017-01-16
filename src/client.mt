@@ -9,7 +9,7 @@ import "lib/streams" =~ [
     => makePump :DeepFrozen,
     => makeSink :DeepFrozen,
 ]
-import "http/headers" =~ [
+import "src/headers" =~ [
     => Headers :DeepFrozen,
     => emptyHeaders :DeepFrozen,
     => parseHeader :DeepFrozen,

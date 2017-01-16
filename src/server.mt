@@ -9,10 +9,7 @@ import "lib/streams" =~ [
     => flow :DeepFrozen,
     => fuse :DeepFrozen,
 ]
-import "lib/tubes" =~ [
-     => makePumpTube :DeepFrozen,
-]
-import "http/headers" =~ [
+import "src/headers" =~ [
     => Headers :DeepFrozen,
     => emptyHeaders :DeepFrozen,
     => parseHeader :DeepFrozen,

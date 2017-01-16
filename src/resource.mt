@@ -1,6 +1,6 @@
 import "lib/codec/utf8" =~ [=> UTF8 :DeepFrozen]
-import "http/tag" =~ [=> tag :DeepFrozen]
-import "http/server" =~ [=> makeHTTPEndpoint :DeepFrozen]
+import "src/tag" =~ [=> tag :DeepFrozen]
+import "src/server" =~ [=> makeHTTPEndpoint :DeepFrozen]
 exports (smallBody,
          notFoundResource,
          makeDebugResource,
