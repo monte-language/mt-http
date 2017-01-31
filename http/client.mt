@@ -106,40 +106,58 @@ def makeBodyMachine(headers :Headers) as DeepFrozen:
 
     return [machine, source]
 
+def [ChunkedState :DeepFrozen,
+     SIZE :DeepFrozen,
+     CHUNK :DeepFrozen,
+] := makeEnum(["size", "chunk"])
+
+# XXX this is...not ideal.
+def hexDigits :Map[Int, Int] := [
+    for i in (b`0123456789abcdefABCDEF`)
+    i => _makeInt.withRadix(16).fromBytes(_makeBytes.fromInts([i]))]
 
 def makeChunkedPump() :Pump as DeepFrozen:
     "Make a pump which decodes chunked transfer coding."
 
-    var chunkSize :NullOk[Int] := null
-    var buf :Bytes := b``
+    var chunkSize :Int := 0
+    var chunks := []
 
-    return def chunkedPump(bs :Bytes) :NullOk[List[Bytes]] as Pump:
-        var rv :List := []
-        buf += bs
-        while (buf.size() != 0):
-            traceln(`chunkSize=$chunkSize buf=$buf rv=$rv`)
-            if (chunkSize == null):
-                # Need to read a new size.
-                if (buf =~ b`@size$\r$\n@rest`):
-                    chunkSize := _makeInt.withRadix(16).fromBytes(size)
-                    buf := rest
-                else:
-                    break
-            else if (chunkSize == 0):
-                # Need to read a newline.
-                buf slice= (2, buf.size())
-                chunkSize := null
-            else:
-                # Need to read a chunk.
-                def chunk := buf.slice(0, chunkSize)
-                if (chunk.size() == 0):
-                    # Zero-sized chunk means end of stream.
-                    buf slice= (2, buf.size())
-                    return null
-                rv with= (chunk)
-                buf slice= (chunkSize, buf.size())
-                chunkSize -= chunk.size()
-        return rv
+    object chunkMachine:
+        to getStateGuard():
+            return ChunkedState
+
+        to getInitialState():
+            return [SIZE, 1]
+
+        to advance(state, data):
+            return switch (state):
+                match ==SIZE:
+                    def i := data[0]
+                    if (i == b`$\r`[0]):
+                        traceln(`SIZE->CHUNK $chunkSize $data`)
+                        # Chunks will looks like b`$\n...$\r$\n` so we'll have
+                        # three extra characters to trim off.
+                        def rv := [CHUNK, chunkSize + 3]
+                        chunkSize := 0
+                        rv
+                    else:
+                        chunkSize *= 16
+                        chunkSize += hexDigits[i]
+                        traceln(`SIZE $chunkSize $data`)
+                        [SIZE, 1]
+                match ==CHUNK:
+                    def slice := data.slice(1, data.size() - 2)
+                    def chunk := _makeBytes.fromInts(slice)
+                    traceln(`CHUNK $chunk`)
+                    chunks with= (chunk)
+                    [SIZE, 1]
+
+        to results():
+            def rv := chunks
+            chunks := []
+            return rv
+
+    return makePump.fromStateMachine(chunkMachine)
 
 
 def makeResponseSink(resolver) as DeepFrozen:
@@ -246,7 +264,7 @@ def makeRequest(makeTCP4ClientEndpoint, host :Bytes, resource :Str,
             return request.send("GET")
 
 
-def main(argv, => getAddrInfo, => makeTCP4ClientEndpoint) as DeepFrozen:
+def main(_argv, => getAddrInfo, => makeTCP4ClientEndpoint) as DeepFrozen:
     def addrs := getAddrInfo(b`localhost`, b``)
     return when (addrs) ->
         def gai := makeGAI(addrs)
