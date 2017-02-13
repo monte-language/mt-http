@@ -9,10 +9,7 @@ import "lib/streams" =~ [
     => flow :DeepFrozen,
     => fuse :DeepFrozen,
 ]
-import "lib/tubes" =~ [
-     => makePumpTube :DeepFrozen,
-]
-import "http/headers" =~ [
+import "src/headers" =~ [
     => Headers :DeepFrozen,
     => emptyHeaders :DeepFrozen,
     => parseHeader :DeepFrozen,
@@ -55,8 +52,11 @@ def [BodyState :DeepFrozen,
      FIXED :DeepFrozen,
      CHUNKED :DeepFrozen] := makeEnum(["fixed", "chunked"])
 
+def CRLF :Bytes := b`$\r$\n`
+
 def makeRequestPump() as DeepFrozen:
     var requestState :RequestState := REQUEST
+
     # How body state works: The int is how much is left to read in the current
     # "chunk". For FIXED, that's how much body is left total; for CHUNKED,
     # it's how much body is left in the current chunk of data.
@@ -73,11 +73,11 @@ def makeRequestPump() as DeepFrozen:
 
         switch (requestState):
             match ==REQUEST:
-                if (buf.indexOf(b`$\r$\n`) == -1):
+                if (buf.indexOf(CRLF) == -1):
                     return false
 
                 # XXX it'd be swell if these were subpatterns
-                def b`@{via (UTF8.decode) verb} @{via (UTF8Percent.decode) uri} HTTP/1.1$\r$\n@t` exit ej := buf
+                def b`@{via (UTF8.decode) verb} @{via (UTF8Percent.decode) uri} HTTP/1.1$CRLF@t` exit ej := buf
                 pendingRequestLine := [verb, uri]
                 headers := emptyHeaders()
                 requestState := HEADER
@@ -85,7 +85,7 @@ def makeRequestPump() as DeepFrozen:
                 return true
 
             match ==HEADER:
-                def index := buf.indexOf(b`$\r$\n`)
+                def index := buf.indexOf(CRLF)
 
                 if (index == -1):
                     return false
@@ -141,28 +141,75 @@ def makeRequestPump() as DeepFrozen:
 
         return []
 
-
 def statusMap :Map[Int, Str] := [
+    100 => "Continue",
+    101 => "Switching Protocols",
+    102 => "Processing",
     200 => "OK",
+    201 => "Created",
+    202 => "Accepted",
+    203 => "Non Authoritative Information",
+    204 => "No Content",
+    205 => "Reset Content",
+    206 => "Partial Content",
+    207 => "Multi Status",
+    226 => "IM Used",              # see RFC 3229
+    300 => "Multiple Choices",
     301 => "Moved Permanently",
+    302 => "Found",
     303 => "See Other",
+    304 => "Not Modified",
+    305 => "Use Proxy",
     307 => "Temporary Redirect",
     400 => "Bad Request",
+    401 => "Unauthorized",
+    402 => "Payment Required",     # unused
+    403 => "Forbidden",
     404 => "Not Found",
+    405 => "Method Not Allowed",
+    406 => "Not Acceptable",
+    407 => "Proxy Authentication Required",
+    408 => "Request Timeout",
+    409 => "Conflict",
+    410 => "Gone",
+    411 => "Length Required",
+    412 => "Precondition Failed",
+    413 => "Request Entity Too Large",
+    414 => "Request URI Too Long",
+    415 => "Unsupported Media Type",
+    416 => "Requested Range Not Satisfiable",
+    417 => "Expectation Failed",
+    418 => "I'm a teapot",  # see RFC 2324
+    422 => "Unprocessable Entity",
+    423 => "Locked",
+    424 => "Failed Dependency",
+    426 => "Upgrade Required",
+    428 => "Precondition Required",  # see RFC 6585
+    429 => "Too Many Requests",
+    431 => "Request Header Fields Too Large",
+    451 => "Unavailable For Legal Reasons",
+    500 => "Internal Server Error",
+    501 => "Not Implemented",
+    502 => "Bad Gateway",
+    503 => "Service Unavailable",
+    504 => "Gateway Timeout",
+    505 => "HTTP Version Not Supported",
+    507 => "Insufficient Storage",
+    510 => "Not Extended"
 ]
 
 
 def makeResponsePump() as DeepFrozen:
     return def responsePump(response):
         def [statusCode, headers, body] := response
-        def statusDescription := statusMap.fetch(statusCode,
-                                                 "Unknown Status")
+        def statusDescription := statusMap.fetch(
+            statusCode, "Unknown Status")
         def status := `$statusCode $statusDescription`
-        var rv := [b`HTTP/1.1 $status$\r$\n`]
+        var rv := [b`HTTP/1.1 $status$CRLF`]
         for header => value in (headers):
             def headerLine := `$header: $value`
-            rv with= (b`$headerLine$\r$\n`)
-        rv with= (b`$\r$\n`)
+            rv with= (b`$headerLine$CRLF`)
+        rv with= (CRLF)
         rv with= (body)
         return rv
 
